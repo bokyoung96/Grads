@@ -134,7 +134,11 @@ class Bundle:
 
 
 def load_bundle(cfg: TransformerConfig) -> Bundle:
-    panel = make_panel(features=cfg.features, norm=cfg.norm)
+    feat_path = cfg.features_dir / "features_price.parquet"
+    norm = cfg.norm
+    if cfg.norm == "asset" and str(cfg.norm_scope).lower() == "split":
+        norm = "none"
+    panel = make_panel(features=cfg.features, norm=norm, features_path=feat_path)
     path = _win_path(cfg)
     if path.exists():
         try:

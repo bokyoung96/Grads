@@ -23,10 +23,14 @@ _feature_modules = (feat_price, feat_fund, feat_cons, feat_sector)
 
 fe = list(FE)
 
+# NOTE: BM_MODE: "excess" or "none"
+BM_MODE = "excess"
+BM_TKR = "IKS200"
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 loader = Load()
 aligner = Align()
 builder = Build(fe)
 
 data = Data(loader, aligner, builder)
-data.make()
+data.make(bm_mode=BM_MODE, bm_tkr=BM_TKR)

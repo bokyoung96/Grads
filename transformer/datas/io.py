@@ -69,7 +69,47 @@ class Panel:
     mask: np.ndarray  # (steps, assets)
 
 
-def make_panel(*, features: Sequence[str], norm: str, zero_invalid: bool = False) -> Panel:
+def _norm_idx(features: Sequence[str]) -> list[int]:
+    to_norm, _, _ = _classify_features(features, include_log1p=True)
+    idx_by_feat = {str(f).lower(): i for i, f in enumerate(features)}
+    cs_exempt = {"ret1_cs_rank", "m1_cs_z", "vol20_cs_z"}
+    out = []
+    for f in to_norm:
+        key = str(f).lower()
+        if key in idx_by_feat and key not in cs_exempt:
+            out.append(idx_by_feat[key])
+    return out
+
+
+def asset_norm_split(panel: Panel, *, features: Sequence[str], years: Sequence[int]) -> Panel:
+    idx = _norm_idx(features)
+    if not idx:
+        return panel
+    y = np.array(years, dtype=int)
+    mask = np.isin(panel.dates.year, y)
+    if not mask.any():
+        raise ValueError("No dates for split normalization.")
+    vals = panel.values.astype(np.float64, copy=True)
+    sub = vals[mask][:, :, idx]
+    finite = np.isfinite(sub)
+    cnt = finite.sum(axis=0, keepdims=True).astype(np.float64)
+    s = np.where(finite, sub, 0.0).sum(axis=0, keepdims=True)
+    mean = np.zeros_like(s, dtype=np.float64)
+    np.divide(s, cnt, out=mean, where=cnt > 0)
+    centered = np.where(finite, sub - mean, 0.0)
+    ss = (centered**2).sum(axis=0, keepdims=True)
+    var = np.zeros_like(ss, dtype=np.float64)
+    np.divide(ss, cnt, out=var, where=cnt > 0)
+    std = np.sqrt(var)
+    denom = np.where((std == 0.0) | (cnt <= 0), 1.0, std)
+    vals[:, :, idx] = (vals[:, :, idx] - mean) / denom
+    out = vals.astype(np.float32, copy=False)
+    return Panel(dates=panel.dates, assets=panel.assets, values=out, mask=panel.mask)
+
+
+def make_panel(
+    *, features: Sequence[str], norm: str, zero_invalid: bool = False, features_path: Path | None = None
+) -> Panel:
     derived = {
         "ret1_cs_rank": "ret1",
         "m1_cs_z": "m1",
@@ -82,7 +122,7 @@ def make_panel(*, features: Sequence[str], norm: str, zero_invalid: bool = False
         if d in requested and base not in base_features:
             base_features.append(base)
 
-    path = Path(FEATURES_PRICE_PARQUET)
+    path = Path(features_path) if features_path is not None else Path(FEATURES_PRICE_PARQUET)
     cols_by_feat = _schema_columns_by_feature(path, base_features)
     if not any(cols_by_feat.values()):
         raise ValueError("features_price parquet has no matching feature columns.")

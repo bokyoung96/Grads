@@ -20,6 +20,7 @@ if str(GRADS_DIR) not in sys.path:
 from transformer.core.model import Transformer
 from transformer.core.params import TransformerConfig, TransformerParams, build_name
 from transformer.core.utils import DeviceSelector
+from transformer.datas.io import asset_norm_split
 from transformer.datas.pipeline import load_bundle, StockDataset
 
 
@@ -61,15 +62,19 @@ def _train_one(
     device = DeviceSelector().resolve()
     logger.info(DeviceSelector().summary("mfd.train"))
     bundle = load_bundle(cfg)
-    ds = StockDataset(bundle.panel, bundle.idx, lookback=cfg.lookback)
     years = _label_years(bundle.idx, dates=bundle.panel.dates, lookback=cfg.lookback, horizon=cfg.horizon)
-    idx = np.arange(len(ds))
+    idx = np.arange(len(bundle.idx.targets))
     train_mask = np.isin(years, np.array(train_years, dtype=int))
     test_mask = np.isin(years, np.array(test_years, dtype=int))
     train_idx = idx[train_mask]
     test_idx = idx[test_mask]
     if train_idx.size == 0 or test_idx.size == 0:
         raise ValueError("Empty train/test split; check rolling years.")
+
+    panel = bundle.panel
+    if cfg.norm == "asset" and str(cfg.norm_scope).lower() == "split":
+        panel = asset_norm_split(panel, features=cfg.features, years=train_years)
+    ds = StockDataset(panel, bundle.idx, lookback=cfg.lookback)
 
     train_ds = torch.utils.data.Subset(ds, train_idx)
     test_ds = torch.utils.data.Subset(ds, test_idx)
@@ -99,6 +104,7 @@ def _train_one(
         drop=cfg.drop,
         n_class=2,
         max_len=int(cfg.lookback + 100),
+        use_bm=cfg.use_bm,
     )
     model = model.to(device)
 
@@ -175,12 +181,16 @@ def train(
     mode: str = "TEST",
     timeframe: str = "MEDIUM",
     config_path: Optional[Path] = None,
+    use_bm: bool = False,
     epochs: Optional[int] = None,
     lr: Optional[float] = None,
 ) -> list[Path]:
-    params = TransformerParams(config_path=config_path)
+    cfg_path = config_path
+    if cfg_path is None and use_bm:
+        cfg_path = TRANSFORMER_DIR / "config" / "config_bm.json"
+    params = TransformerParams(config_path=cfg_path)
     cfg = params.get_config(mode=mode, timeframe=timeframe)
-    params.validate_features(cfg.features)
+    params.validate_features(cfg.features, use_bm=cfg.use_bm)
     bundle = load_bundle(cfg)
     years = _label_years(bundle.idx, dates=bundle.panel.dates, lookback=cfg.lookback, horizon=cfg.horizon)
     splits = _rolling_splits(cfg, years)
@@ -193,4 +203,4 @@ def train(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    train(mode="TEST", timeframe="MEDIUM")
+    train(mode="TEST", timeframe="MEDIUM", use_bm=True)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-
-PRICE_FEATURES = [
+BASE_PRICE_FEATURES = [
     "ret1",
     "ret5",
     "ret10",
@@ -9,6 +8,12 @@ PRICE_FEATURES = [
     "dist_ma20",
     "breakout",
     "ret1_cs_rank",
+]
+
+BM_FEATURES = [
+    "bm_ret1",
+    "bm_vol20",
+    "bm_dd",
 ]
 
 MOMENTUM_FEATURES = [
@@ -59,13 +64,31 @@ TECHNICAL_FEATURES = [
     "hlr",
 ]
 
-FEATURE_ORDER = (
-    PRICE_FEATURES
-    + MOMENTUM_FEATURES
-    + VOLATILITY_FEATURES
-    + LIQUIDITY_FEATURES
-    + TECHNICAL_FEATURES
-)
+
+def price_features(use_bm: bool = False) -> list[str]:
+    feats = list(BASE_PRICE_FEATURES)
+    if use_bm:
+        feats.extend(BM_FEATURES)
+    return feats
+
+
+def group_lists(use_bm: bool = False) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+    return (
+        price_features(use_bm),
+        MOMENTUM_FEATURES,
+        VOLATILITY_FEATURES,
+        LIQUIDITY_FEATURES,
+        TECHNICAL_FEATURES,
+    )
+
+
+def feature_order(use_bm: bool = False) -> tuple[str, ...]:
+    p, m, v, l, t = group_lists(use_bm)
+    return tuple(p + m + v + l + t)
+
+
+PRICE_FEATURES = BASE_PRICE_FEATURES
+FEATURE_ORDER = feature_order(False)
 
 GROUP_SIZES = {
     "price": len(PRICE_FEATURES),

@@ -5,15 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .groups import (
-    FEATURE_ORDER,
-    LIQUIDITY_FEATURES,
-    MOMENTUM_FEATURES,
-    PRICE_FEATURES,
-    TECHNICAL_FEATURES,
-    VOLATILITY_FEATURES,
-    group_dims_for,
-)
+from .groups import feature_order, group_dims_for, group_lists
 
 
 class GLU(nn.Module):
@@ -90,10 +82,12 @@ class Transformer(nn.Module):
         drop: float = 0.1,
         n_class: int = 2,
         max_len: int = 5000,
+        use_bm: bool = False,
     ):
         super().__init__()
 
-        expected = len(FEATURE_ORDER)
+        order = feature_order(use_bm)
+        expected = len(order)
         if int(n_feat) != expected:
             raise ValueError(f"Expected n_feat={expected} based on FEATURE_ORDER, got n_feat={n_feat}.")
 
@@ -108,11 +102,18 @@ class Transformer(nn.Module):
         to reason over information types (price, momentum, risk, liquidity,
         technical) rather than raw features
         """
-        self.price_proj = nn.Linear(len(PRICE_FEATURES), d_price)
-        self.mom_proj = nn.Linear(len(MOMENTUM_FEATURES), d_mom)
-        self.vol_proj = nn.Linear(len(VOLATILITY_FEATURES), d_vol)
-        self.liq_proj = nn.Linear(len(LIQUIDITY_FEATURES), d_liq)
-        self.tech_proj = nn.Linear(len(TECHNICAL_FEATURES), d_tech)
+        p_feats, m_feats, v_feats, l_feats, t_feats = group_lists(use_bm)
+        self._p_end = len(p_feats)
+        self._m_end = self._p_end + len(m_feats)
+        self._v_end = self._m_end + len(v_feats)
+        self._l_end = self._v_end + len(l_feats)
+        self._t_end = self._l_end + len(t_feats)
+
+        self.price_proj = nn.Linear(len(p_feats), d_price)
+        self.mom_proj = nn.Linear(len(m_feats), d_mom)
+        self.vol_proj = nn.Linear(len(v_feats), d_vol)
+        self.liq_proj = nn.Linear(len(l_feats), d_liq)
+        self.tech_proj = nn.Linear(len(t_feats), d_tech)
         self.act = nn.GELU()
         self.in_norm = nn.LayerNorm(int(d_model))
 
@@ -142,11 +143,11 @@ class Transformer(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         # x: (batch, seq, n_features) with features ordered as FEATURE_ORDER.
-        p_end = len(PRICE_FEATURES)
-        m_end = p_end + len(MOMENTUM_FEATURES)
-        v_end = m_end + len(VOLATILITY_FEATURES)
-        l_end = v_end + len(LIQUIDITY_FEATURES)
-        t_end = l_end + len(TECHNICAL_FEATURES)
+        p_end = self._p_end
+        m_end = self._m_end
+        v_end = self._v_end
+        l_end = self._l_end
+        t_end = self._t_end
         if x.size(-1) != t_end:
             raise ValueError("Unexpected feature dimension; ensure config features match FEATURE_ORDER.")
 

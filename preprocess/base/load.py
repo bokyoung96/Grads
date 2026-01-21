@@ -57,6 +57,10 @@ class Load:
     def k200(self):
         return self.csv("qw_k200_yn")
 
+    def bm(self):
+        df = pd.read_parquet(self.p / "qw_BM.parquet")
+        return ensure_datetime_index(df)
+
     def universe(self, name: str = "k200"):
         if name == "k200":
             return self.k200()

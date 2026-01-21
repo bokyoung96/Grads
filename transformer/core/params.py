@@ -35,10 +35,13 @@ class TransformerConfig:
     d_ff: int
     drop: float
     features: Tuple[str, ...]
+    use_bm: bool
     norm: str
+    norm_scope: str
     label_type: str
     threshold: float
     cache_dir: Path
+    features_dir: Path
     output_dir: Path
     checkpoint_dir: Path
 
@@ -56,6 +59,7 @@ class TransformerParams:
         model_cfg = tf_cfg["model"]
         rolling_cfg = self.config.get("rolling", {})
         cache_dir = _resolve(GRADS_DIR, self.config.get("cache_dir", "DATA/transformer"))
+        features_dir = _resolve(GRADS_DIR, self.config.get("features_dir", "DATA/processed/features"))
         output_dir = _resolve(TRANSFORMER_DIR, self.config.get("output_dir", "artifacts/out"))
         checkpoint_dir = _resolve(TRANSFORMER_DIR, self.config.get("checkpoint_dir", "artifacts/models"))
         return TransformerConfig(
@@ -77,18 +81,21 @@ class TransformerParams:
             d_ff=int(model_cfg["d_ff"]),
             drop=float(model_cfg["drop"]),
             features=tuple(self.config["features"]),
+            use_bm=bool(self.config.get("use_bm", False)),
             norm=str(self.config.get("norm", "none")),
+            norm_scope=str(self.config.get("norm_scope", "full")),
             label_type=str(self.config.get("label_type", "classification")),
             threshold=float(self.config.get("threshold", 0.0)),
             cache_dir=cache_dir,
+            features_dir=features_dir,
             output_dir=output_dir,
             checkpoint_dir=checkpoint_dir,
         )
 
-    def validate_features(self, features: Tuple[str, ...]) -> None:
-        from transformer.core.model.groups import FEATURE_ORDER
+    def validate_features(self, features: Tuple[str, ...], *, use_bm: bool = False) -> None:
+        from transformer.core.model.groups import feature_order
 
-        if tuple(features) != tuple(FEATURE_ORDER):
+        if tuple(features) != tuple(feature_order(use_bm)):
             raise ValueError(
                 "mfd feature order mismatch: config features must exactly match FEATURE_ORDER "
                 "(grouped hard-coded order)."

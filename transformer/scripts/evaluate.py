@@ -19,6 +19,7 @@ if str(GRADS_DIR) not in sys.path:
 from transformer.core.model import Transformer
 from transformer.core.params import TransformerConfig, TransformerParams, build_name
 from transformer.core.utils import DeviceSelector
+from transformer.datas.io import asset_norm_split
 from transformer.datas.pipeline import load_bundle, StockDataset
 
 
@@ -52,36 +53,33 @@ def evaluate(
     mode: str = "TEST",
     timeframe: str = "MEDIUM",
     config_path: Optional[Path] = None,
+    use_bm: bool = False,
     out: Optional[Path] = None,
 ) -> Path:
-    params = TransformerParams(config_path=config_path)
+    cfg_path = config_path
+    if cfg_path is None and use_bm:
+        cfg_path = TRANSFORMER_DIR / "config" / "config_bm.json"
+    params = TransformerParams(config_path=cfg_path)
     cfg = params.get_config(mode=mode, timeframe=timeframe)
-    params.validate_features(cfg.features)
+    params.validate_features(cfg.features, use_bm=cfg.use_bm)
     device = DeviceSelector().resolve()
     logger.info(DeviceSelector().summary("mfd.eval"))
 
     bundle = load_bundle(cfg)
-    ds = StockDataset(bundle.panel, bundle.idx, lookback=cfg.lookback)
     years = _label_years(bundle.idx, dates=bundle.panel.dates, lookback=cfg.lookback, horizon=cfg.horizon)
     splits = _rolling_splits(cfg, years)
 
-    from transformer.core.model.groups import (
-        LIQUIDITY_FEATURES,
-        MOMENTUM_FEATURES,
-        PRICE_FEATURES,
-        TECHNICAL_FEATURES,
-        VOLATILITY_FEATURES,
-        FEATURE_ORDER,
-    )
+    from transformer.core.model.groups import feature_order, group_lists
 
-    if tuple(cfg.features) != tuple(FEATURE_ORDER):
+    if tuple(cfg.features) != tuple(feature_order(cfg.use_bm)):
         raise ValueError("Config features must exactly match FEATURE_ORDER for view masking.")
 
-    p_end = len(PRICE_FEATURES)
-    m_end = p_end + len(MOMENTUM_FEATURES)
-    v_end = m_end + len(VOLATILITY_FEATURES)
-    l_end = v_end + len(LIQUIDITY_FEATURES)
-    t_end = l_end + len(TECHNICAL_FEATURES)
+    p_feats, m_feats, v_feats, l_feats, t_feats = group_lists(cfg.use_bm)
+    p_end = len(p_feats)
+    m_end = p_end + len(m_feats)
+    v_end = m_end + len(v_feats)
+    l_end = v_end + len(l_feats)
+    t_end = l_end + len(t_feats)
     n_feat = t_end
 
     keep_full = np.ones(n_feat, dtype=np.float32)
@@ -113,6 +111,11 @@ def evaluate(
         if not ckpt.exists():
             raise FileNotFoundError(f"Missing checkpoint for split {split_tag}: {ckpt}")
 
+        panel = bundle.panel
+        if cfg.norm == "asset" and str(cfg.norm_scope).lower() == "split":
+            panel = asset_norm_split(panel, features=cfg.features, years=tr_years)
+        ds = StockDataset(panel, bundle.idx, lookback=cfg.lookback)
+
         idx_all = np.arange(len(ds))
         test_mask = np.isin(years, np.array(te_years, dtype=int))
         test_idx = idx_all[test_mask]
@@ -138,6 +141,7 @@ def evaluate(
             drop=cfg.drop,
             n_class=2,
             max_len=int(cfg.lookback + 100),
+            use_bm=cfg.use_bm,
         )
         state = torch.load(ckpt, map_location="cpu")
         model.load_state_dict(state)

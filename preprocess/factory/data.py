@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-import pandas as pd
 import logging
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
 from preprocess.base.duck import DB
+from preprocess.base.feature import add_feature
+from preprocess.market.bm import BM, BMAdj, BM_TICKER
+from preprocess.market.univ import master as master_univ, active as active_univ
 from root import CONS_PARQUET, FUND_PARQUET, PRICE_PARQUET, SECTOR_PARQUET, UNIVERSE_PARQUET
 from root import FEATURES_PRICE_PARQUET, FEATURES_FUND_PARQUET, FEATURES_CONS_PARQUET, FEATURES_SECTOR_PARQUET, FEATURES_DIR
-from preprocess.market.univ import master as master_univ, active as active_univ
 
 
 class Data:
@@ -71,9 +76,13 @@ class Data:
         out.index = base_idx
         return out
 
-    def make(self, table: str = "features", universe: str = "k200"):
-        price = self.load.price()
-        idx = price["c"].index
+    def _bm_expand(self, s: pd.Series, cols: list[str]) -> pd.DataFrame:
+        arr = np.repeat(s.to_numpy()[:, None], len(cols), axis=1)
+        return pd.DataFrame(arr, index=s.index, columns=cols)
+
+    def make(self, table: str = "features", universe: str = "k200", *, bm_mode: str = "none", bm_tkr: str | None = None):
+        price_raw = self.load.price()
+        idx = price_raw["c"].index
 
         uni_raw = self.load.universe(universe)
         uni_daily = self.align.daily(uni_raw, idx)
@@ -84,7 +93,18 @@ class Data:
             cols = [c for c in df.columns if c in uni_master]
             return df.loc[:, cols]
 
-        price = {k: filter_cols(v) for k, v in price.items()}
+        price_raw = {k: filter_cols(v) for k, v in price_raw.items()}
+        bm_on = str(bm_mode).lower() not in {"", "none", "off", "false", "0"}
+        price_use = price_raw
+        bm_frames = None
+        if bm_on:
+            tkr = bm_tkr or BM_TICKER
+            bm = BM(ticker=tkr)
+            adj = BMAdj(bm=bm.series())
+            price_use = adj.apply(price_raw)
+            bm_df = bm.feats().reindex(idx)
+            cols = list(price_use["c"].columns)
+            bm_frames = {name: self._bm_expand(bm_df[name], cols) for name in bm_df.columns}
 
         fund_src = self.load.fundamentals()
         fund_src = {k: filter_cols(v) for k, v in fund_src.items()}
@@ -120,14 +140,26 @@ class Data:
         consensus = {k: filter_cols(self.align.daily(v, idx)) for k, v in self.load.consensus().items()}
         sectors = filter_cols(self.align.daily(self.load.sector(), idx))
 
+        price_df_raw = pd.concat(
+            [
+                price_raw["c"],
+                price_raw["o"],
+                price_raw["h"],
+                price_raw["l"],
+                price_raw["v"],
+                price_raw["mc"],
+            ],
+            axis=1,
+            keys=["close", "open", "high", "low", "vol", "mcap"],
+        )
         price_df = pd.concat(
             [
-                price["c"],
-                price["o"],
-                price["h"],
-                price["l"],
-                price["v"],
-                price["mc"],
+                price_use["c"],
+                price_use["o"],
+                price_use["h"],
+                price_use["l"],
+                price_use["v"],
+                price_use["mc"],
             ],
             axis=1,
             keys=["close", "open", "high", "low", "vol", "mcap"],
@@ -169,7 +201,7 @@ class Data:
         active_df = uni_active.reindex(idx).ffill()
 
         self.log.info("Saving raw price to %s", PRICE_PARQUET)
-        self.db.save_parquet(price_df, PRICE_PARQUET)
+        self.db.save_parquet(price_df_raw, PRICE_PARQUET)
         self.log.info("Saving raw fundamentals to %s", FUND_PARQUET)
         self.db.save_parquet(fund_df, FUND_PARQUET)
         self.log.info("Saving raw consensus to %s", CONS_PARQUET)
@@ -187,10 +219,14 @@ class Data:
         feats = [f.value if hasattr(f, "value") else str(f) for f in self.build.feats]
         self.log.info("Applying %d features: %s", len(feats), feats)
         df = self.build.run(df)
-        self.save_features(df)
-        self.log.info("Saved features to %s", FEATURES_DIR)
+        if bm_frames:
+            for name, vals in bm_frames.items():
+                df = add_feature(df, name, vals)
+        feat_dir = FEATURES_DIR if not bm_on else (FEATURES_DIR.parent / "features_bm")
+        self.save_features(df, out_dir=feat_dir)
+        self.log.info("Saved features to %s", feat_dir)
 
-    def save_features(self, df: pd.DataFrame):
+    def save_features(self, df: pd.DataFrame, *, out_dir: Path | None = None):
         feature_groups = {
             "price": {
                 "names": {
@@ -237,6 +273,9 @@ class Data:
                     "price_z",
                     "dist_ma20",
                     "breakout",
+                    "bm_ret1",
+                    "bm_vol20",
+                    "bm_dd",
                 },
                 "path": FEATURES_PRICE_PARQUET,
             },
@@ -277,6 +316,13 @@ class Data:
                 "path": FEATURES_SECTOR_PARQUET,
             },
         }
+
+        if out_dir is not None:
+            out_dir = Path(out_dir)
+            feature_groups["price"]["path"] = out_dir / "features_price.parquet"
+            feature_groups["fundamentals"]["path"] = out_dir / "features_fundamentals.parquet"
+            feature_groups["consensus"]["path"] = out_dir / "features_consensus.parquet"
+            feature_groups["sector"]["path"] = out_dir / "features_sector.parquet"
 
         for group_name, cfg in tqdm(feature_groups.items(), desc="Saving features"):
             names = cfg["names"]
