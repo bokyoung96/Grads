@@ -36,6 +36,7 @@ class TransformerConfig:
     drop: float
     features: Tuple[str, ...]
     use_bm: bool
+    use_univ: bool
     norm: str
     norm_scope: str
     label_type: str
@@ -82,6 +83,7 @@ class TransformerParams:
             drop=float(model_cfg["drop"]),
             features=tuple(self.config["features"]),
             use_bm=bool(self.config.get("use_bm", False)),
+            use_univ=bool(self.config.get("use_univ", False)),
             norm=str(self.config.get("norm", "none")),
             norm_scope=str(self.config.get("norm_scope", "full")),
             label_type=str(self.config.get("label_type", "classification")),

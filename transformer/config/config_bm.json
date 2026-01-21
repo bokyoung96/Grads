@@ -43,6 +43,7 @@
     "step_years": 1
   },
   "use_bm": true,
+  "use_univ": true,
   "features_dir": "DATA/processed/features_bm",
   "norm_scope": "split",
   "features": [

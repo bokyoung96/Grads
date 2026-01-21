@@ -16,6 +16,8 @@ GRADS_DIR = TRANSFORMER_DIR.parent
 if str(GRADS_DIR) not in sys.path:
     sys.path.insert(0, str(GRADS_DIR))
 
+from root import UNIVERSE_PARQUET
+
 from transformer.core.model import Transformer
 from transformer.core.params import TransformerConfig, TransformerParams, build_name
 from transformer.core.utils import DeviceSelector
@@ -31,6 +33,27 @@ def _label_years(idx, *, dates: pd.DatetimeIndex, lookback: int, horizon: int) -
     label_idx = t_idx + int(horizon)
     label_dates = dates[label_idx]
     return pd.to_datetime(label_dates).year.astype(int)
+
+
+def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df = df.copy()
+        df.index = pd.to_datetime(df.index)
+    df.index.name = "date"
+    return df
+
+
+def _sample_univ_mask(idx, *, panel, path: Path = UNIVERSE_PARQUET) -> np.ndarray:
+    uni = pd.read_parquet(path)
+    uni = _ensure_datetime_index(uni)
+    uni = uni.reindex(index=panel.dates, columns=panel.assets.astype(str)).fillna(False)
+    arr = uni.to_numpy(dtype=bool, copy=False)
+    dates = panel.dates.to_numpy()
+    pos = np.searchsorted(dates, idx.dates)
+    ok = (pos >= 0) & (pos < len(dates)) & (dates[pos] == idx.dates)
+    out = np.zeros(idx.targets.shape[0], dtype=bool)
+    out[ok] = arr[pos[ok], idx.asset_idx[ok]]
+    return out
 
 
 def _rolling_splits(cfg: TransformerConfig, years: np.ndarray) -> list[tuple[list[int], list[int]]]:
@@ -118,6 +141,11 @@ def evaluate(
 
         idx_all = np.arange(len(ds))
         test_mask = np.isin(years, np.array(te_years, dtype=int))
+        if cfg.use_univ:
+            test_pre = int(test_mask.sum())
+            univ_ok = _sample_univ_mask(bundle.idx, panel=panel)
+            test_mask &= univ_ok
+            logger.info("univ filter: test=%d->%d", test_pre, int(test_mask.sum()))
         test_idx = idx_all[test_mask]
 
         test_dates = pd.DatetimeIndex(bundle.idx.dates[test_mask])

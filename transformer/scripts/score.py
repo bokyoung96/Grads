@@ -19,6 +19,7 @@ if str(GRADS_DIR) not in sys.path:
 from root import UNIVERSE_PARQUET
 
 from transformer.datas.read import ScoreReader
+from transformer.core.params import TransformerParams
 
 
 def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -63,12 +64,14 @@ class TradeScore:
         bottom_pct: float = 10.0,
         mfd_metric: str = "dispersion",
         universe_path: Path = UNIVERSE_PARQUET,
+        use_univ: bool = True,
     ):
         self.scores = scores
         self.paths = ScorePaths.from_reader(scores)
         self.bottom_pct = float(bottom_pct)
         self.mfd_metric = str(mfd_metric).strip().lower()
         self.universe_path = Path(universe_path)
+        self.use_univ = bool(use_univ)
 
         if not (0.0 < self.bottom_pct <= 100.0):
             raise ValueError("bottom_pct must be in (0, 100].")
@@ -84,9 +87,20 @@ class TradeScore:
         bottom_pct: float = 10.0,
         mfd_metric: str = "dispersion",
         universe_path: Path = UNIVERSE_PARQUET,
+        use_univ: Optional[bool] = None,
     ) -> "TradeScore":
+        params = TransformerParams(config_path=config_path)
+        cfg = params.get_config(mode=mode, timeframe=timeframe)
+        if use_univ is None:
+            use_univ = cfg.use_univ
         sr = ScoreReader.from_config(mode=mode, timeframe=timeframe, config_path=config_path)
-        return TradeScore(scores=sr, bottom_pct=bottom_pct, mfd_metric=mfd_metric, universe_path=universe_path)
+        return TradeScore(
+            scores=sr,
+            bottom_pct=bottom_pct,
+            mfd_metric=mfd_metric,
+            universe_path=universe_path,
+            use_univ=use_univ,
+        )
 
     def _load_universe(self) -> pd.DataFrame:
         uni = pd.read_parquet(self.universe_path)
@@ -100,6 +114,8 @@ class TradeScore:
     @cached_property
     def universe_mask(self) -> pd.DataFrame:
         base = _ensure_datetime_index(self.scores.full)
+        if not self.use_univ:
+            return pd.DataFrame(True, index=base.index, columns=base.columns)
         uni = self._load_universe()
         mask = uni.reindex(index=base.index, columns=base.columns).fillna(False)
         return mask.astype(bool)
@@ -170,11 +186,16 @@ def save_multi(
     bottom_pcts: list[float],
     mfd_metric: str = "dispersion",
     universe_path: Path = UNIVERSE_PARQUET,
+    use_univ: Optional[bool] = None,
     out_dir: Optional[Path] = None,
     prefix: str = "price_trends_score_transformer_medium_mfd",
 ) -> dict[float, Path]:
     sr = ScoreReader.from_config(mode=mode, timeframe=timeframe, config_path=config_path)
     base = ScorePaths.from_reader(sr)
+    if use_univ is None:
+        params = TransformerParams(config_path=config_path)
+        cfg = params.get_config(mode=mode, timeframe=timeframe)
+        use_univ = cfg.use_univ
     default_scores_dir = (GRADS_DIR.parent / "PriceTrends" / "scores").resolve()
     if out_dir is not None:
         out_base = Path(out_dir)
@@ -186,7 +207,13 @@ def save_multi(
 
     paths: dict[float, Path] = {}
     for pct in bottom_pcts:
-        ts = TradeScore(scores=sr, bottom_pct=float(pct), mfd_metric=mfd_metric, universe_path=universe_path)
+        ts = TradeScore(
+            scores=sr,
+            bottom_pct=float(pct),
+            mfd_metric=mfd_metric,
+            universe_path=universe_path,
+            use_univ=use_univ,
+        )
         tag = _pct_tag(float(pct))
         path = out_base / f"{prefix}_{tag}.parquet"
         paths[float(pct)] = ts.save(out_path=path)

@@ -16,6 +16,7 @@ if str(GRADS_DIR) not in sys.path:
 from root import UNIVERSE_PARQUET
 
 from transformer.datas.read import ScoreReader
+from transformer.core.params import TransformerParams
 
 
 def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -61,9 +62,10 @@ class MFDResult:
 
 
 class MFDProcessor:
-    def __init__(self, *, scores: ScoreReader, universe_path: Path = UNIVERSE_PARQUET):
+    def __init__(self, *, scores: ScoreReader, universe_path: Path = UNIVERSE_PARQUET, use_univ: bool = True):
         self.scores = scores
         self.universe_path = Path(universe_path)
+        self.use_univ = bool(use_univ)
 
     @staticmethod
     def from_config(
@@ -72,9 +74,14 @@ class MFDProcessor:
         timeframe: str = "MEDIUM",
         config_path: Optional[Path] = None,
         universe_path: Path = UNIVERSE_PARQUET,
+        use_univ: Optional[bool] = None,
     ) -> "MFDProcessor":
+        params = TransformerParams(config_path=config_path)
+        cfg = params.get_config(mode=mode, timeframe=timeframe)
+        if use_univ is None:
+            use_univ = cfg.use_univ
         sr = ScoreReader.from_config(mode=mode, timeframe=timeframe, config_path=config_path)
-        return MFDProcessor(scores=sr, universe_path=universe_path)
+        return MFDProcessor(scores=sr, universe_path=universe_path, use_univ=use_univ)
 
     def load_universe(self) -> pd.DataFrame:
         uni = pd.read_parquet(self.universe_path)
@@ -92,6 +99,13 @@ class MFDProcessor:
         pm = _ensure_datetime_index(self.scores.pm)
         liq = _ensure_datetime_index(self.scores.liq)
         tech = _ensure_datetime_index(self.scores.tech)
+        if not self.use_univ:
+            return {
+                "full": full,
+                "pm": pm,
+                "liq": liq,
+                "tech": tech,
+            }
         mask = self.universe_mask_like(full)
         return {
             "full": full.where(mask),

@@ -17,6 +17,8 @@ GRADS_DIR = TRANSFORMER_DIR.parent
 if str(GRADS_DIR) not in sys.path:
     sys.path.insert(0, str(GRADS_DIR))
 
+from root import UNIVERSE_PARQUET
+
 from transformer.core.model import Transformer
 from transformer.core.params import TransformerConfig, TransformerParams, build_name
 from transformer.core.utils import DeviceSelector
@@ -32,6 +34,27 @@ def _label_years(idx, *, dates: pd.DatetimeIndex, lookback: int, horizon: int) -
     label_idx = t_idx + int(horizon)
     label_dates = dates[label_idx]
     return pd.to_datetime(label_dates).year.astype(int)
+
+
+def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df = df.copy()
+        df.index = pd.to_datetime(df.index)
+    df.index.name = "date"
+    return df
+
+
+def _sample_univ_mask(idx, *, panel, path: Path = UNIVERSE_PARQUET) -> np.ndarray:
+    uni = pd.read_parquet(path)
+    uni = _ensure_datetime_index(uni)
+    uni = uni.reindex(index=panel.dates, columns=panel.assets.astype(str)).fillna(False)
+    arr = uni.to_numpy(dtype=bool, copy=False)
+    dates = panel.dates.to_numpy()
+    pos = np.searchsorted(dates, idx.dates)
+    ok = (pos >= 0) & (pos < len(dates)) & (dates[pos] == idx.dates)
+    out = np.zeros(idx.targets.shape[0], dtype=bool)
+    out[ok] = arr[pos[ok], idx.asset_idx[ok]]
+    return out
 
 
 def _rolling_splits(cfg: TransformerConfig, years: np.ndarray) -> list[tuple[list[int], list[int]]]:
@@ -62,16 +85,28 @@ def _train_one(
     device = DeviceSelector().resolve()
     logger.info(DeviceSelector().summary("mfd.train"))
     bundle = load_bundle(cfg)
+    panel = bundle.panel
     years = _label_years(bundle.idx, dates=bundle.panel.dates, lookback=cfg.lookback, horizon=cfg.horizon)
     idx = np.arange(len(bundle.idx.targets))
     train_mask = np.isin(years, np.array(train_years, dtype=int))
     test_mask = np.isin(years, np.array(test_years, dtype=int))
+    if cfg.use_univ:
+        train_pre = int(train_mask.sum())
+        test_pre = int(test_mask.sum())
+        univ_ok = _sample_univ_mask(bundle.idx, panel=panel)
+        train_mask &= univ_ok
+        test_mask &= univ_ok
+        logger.info(
+            "univ filter: train=%d->%d test=%d->%d",
+            train_pre,
+            int(train_mask.sum()),
+            test_pre,
+            int(test_mask.sum()),
+        )
     train_idx = idx[train_mask]
     test_idx = idx[test_mask]
     if train_idx.size == 0 or test_idx.size == 0:
         raise ValueError("Empty train/test split; check rolling years.")
-
-    panel = bundle.panel
     if cfg.norm == "asset" and str(cfg.norm_scope).lower() == "split":
         panel = asset_norm_split(panel, features=cfg.features, years=train_years)
     ds = StockDataset(panel, bundle.idx, lookback=cfg.lookback)
